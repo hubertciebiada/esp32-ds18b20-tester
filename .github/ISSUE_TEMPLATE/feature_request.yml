@@ -1,0 +1,21 @@
+name: 💡 Propozycja funkcji
+description: Pomysł na nową funkcję lub usprawnienie
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Jaki problem rozwiązuje ta funkcja?
+      placeholder: Chciałbym/Chciałabym móc...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proponowane rozwiązanie
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Rozważane alternatywy

@@ -1,0 +1,37 @@
+name: 🐞 Zgłoszenie błędu
+description: Coś nie działa tak, jak powinno
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Co się stało?
+      description: Opisz problem oraz czego się spodziewałeś/aś.
+      placeholder: Po skanie gubi się część czujników...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Kroki do odtworzenia
+      placeholder: |
+        1. Podłączam X czujników
+        2. Wgrywam firmware
+        3. Otwieram http://192.168.4.1
+    validations:
+      required: true
+  - type: input
+    id: sensors
+    attributes:
+      label: Liczba czujników i długość magistrali
+      placeholder: "np. 30 czujników, ~5 m, pull-up 2,2 kΩ"
+  - type: input
+    id: board
+    attributes:
+      label: Płytka ESP32
+      placeholder: "np. ESP32 DevKit v1"
+  - type: textarea
+    id: serial
+    attributes:
+      label: Log z monitora szeregowego (115200)
+      render: text

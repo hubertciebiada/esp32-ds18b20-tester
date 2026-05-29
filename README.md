@@ -1,11 +1,29 @@
 # esp32-ds18b20-tester
 
+[![build](https://github.com/hubertciebiada/esp32-ds18b20-tester/actions/workflows/build.yml/badge.svg)](https://github.com/hubertciebiada/esp32-ds18b20-tester/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform: ESP32](https://img.shields.io/badge/platform-ESP32-blue.svg)](https://platformio.org/)
+[![Framework: Arduino](https://img.shields.io/badge/framework-Arduino-00979D.svg)](https://platformio.org/frameworks/arduino)
+
 Standalone warsztatowy tester czujników DS18B20 na ESP32 — skan magistrali 1-Wire,
 podgląd pełnych adresów ROM i temperatur na lokalnej stronie WWW, identyfikacja
 pojedynczych czujników metodą ciepłej szklanki (podświetlenie najgorętszego).
 
 W pełni samodzielny — **bez** integracji z Home Assistant / MQTT / ESPHome / chmurą.
 Pełna specyfikacja w [`SPEC.md`](SPEC.md).
+
+## Podgląd
+
+Strona WWW automatycznie odświeża się co sekundę. Wiersz z najwyższą temperaturą
+jest wyraźnie podświetlony — wkładasz czujniki po kolei do ciepłej wody i od razu
+widzisz, który ROM „skoczył".
+
+| Desktop | Mobile |
+|---------|--------|
+| [![Web UI – desktop](docs/img/web-desktop.png)](docs/img/web-desktop.png) | [![Web UI – mobile](docs/img/web-mobile.png)](docs/img/web-mobile.png) |
+
+> Zrzuty wygenerowane z mockowymi danymi (skrypt [`tools/screenshot.py`](tools/screenshot.py)) —
+> renderuje realny front-end firmware bez podłączonego ESP32.
 
 ## Funkcje
 
