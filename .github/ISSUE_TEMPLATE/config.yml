@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
-  - name: 💬 Pytania i dyskusje
+  - name: 💬 Questions and discussions
     url: https://github.com/hubertciebiada/esp32-ds18b20-tester/discussions
-    about: Pytania o dobór sprzętu, pull-up, użycie — najlepiej tutaj.
+    about: Questions about hardware choices, pull-up, usage — best asked here.

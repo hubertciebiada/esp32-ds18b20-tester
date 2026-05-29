@@ -1,15 +1,15 @@
-<!-- Dzięki za wkład! Krótko opisz zmianę. -->
+<!-- Thanks for contributing! Briefly describe your change. -->
 
-## Opis
-<!-- Co zmienia ten PR i dlaczego? -->
+## Description
+<!-- What does this PR change and why? -->
 
-## Rodzaj zmiany
-- [ ] Poprawka błędu
-- [ ] Nowa funkcja
-- [ ] Dokumentacja
-- [ ] Inne
+## Type of change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Documentation
+- [ ] Other
 
-## Weryfikacja
-- [ ] `pio run` kompiluje się bez błędów
-- [ ] Przetestowano na sprzęcie (jeśli dotyczy) — podaj liczbę czujników: 
-- [ ] Komentarze w kodzie po polsku (zgodnie z konwencją repo)
+## Verification
+- [ ] `pio run` compiles without errors
+- [ ] Tested on hardware (if applicable) — sensor count:
+- [ ] Code comments in English (matching the repo convention)

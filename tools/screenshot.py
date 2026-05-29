@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Renderuje web UI testera DS18B20 z mockowymi danymi i zapisuje screenshoty.
+"""Render the DS18B20 tester web UI with mock data and save screenshots.
 
-Wyciąga blok INDEX_HTML z src/main.cpp, serwuje go lokalnie razem z mockowym
-endpointem /data (taki sam kształt JSON jak buildJson() w firmware) i robi
-zrzuty ekranu w Chromium (desktop + mobile) do docs/img/.
+Extracts the INDEX_HTML block from src/main.cpp, serves it locally together
+with a mock /data endpoint (the same JSON shape as buildJson() in the firmware)
+and captures Chromium screenshots (desktop + mobile) into docs/img/.
 
-Nie wymaga sprzętu ESP32 — to czysty podgląd front-endu.
+No ESP32 hardware required — this is a pure front-end preview.
 """
 import json
 import re
@@ -21,15 +21,15 @@ MAIN = ROOT / "src" / "main.cpp"
 OUT = ROOT / "docs" / "img"
 OUT.mkdir(parents=True, exist_ok=True)
 
-# --- wyciągnięcie HTML z firmware (blok R"HTML( ... )HTML") ---
+# --- extract the HTML from the firmware (the R"HTML( ... )HTML" block) ---
 src = MAIN.read_text(encoding="utf-8")
 m = re.search(r'R"HTML\((.*?)\)HTML"', src, re.DOTALL)
 if not m:
-    raise SystemExit("Nie znaleziono bloku INDEX_HTML w main.cpp")
+    raise SystemExit("INDEX_HTML block not found in main.cpp")
 HTML = m.group(1)
 
-# --- realistyczny mock /data (kształt zgodny z buildJson()) ---
-# Scenariusz „ciepłej szklanki": czujnik #3 jest najgorętszy (włożony do wody).
+# --- realistic mock /data (shape matching buildJson()) ---
+# "Warm glass" scenario: sensor #3 is the hottest (dipped into water).
 MOCK = {
     "count": 8,
     "resolution": 12,
@@ -85,21 +85,21 @@ def main():
             page = browser.new_page(viewport={"width": 1100, "height": 900},
                                     device_scale_factor=2)
             page.goto("http://127.0.0.1:8765/")
-            page.wait_for_function("document.getElementById('conn').textContent==='połączono'",
+            page.wait_for_function("document.getElementById('conn').textContent==='connected'",
                                    timeout=5000)
             page.wait_for_timeout(400)
             page.screenshot(path=str(OUT / "web-desktop.png"))
-            print("zapisano", OUT / "web-desktop.png")
+            print("saved", OUT / "web-desktop.png")
 
             # Mobile
             mob = browser.new_page(viewport={"width": 390, "height": 844},
                                    device_scale_factor=2, is_mobile=True)
             mob.goto("http://127.0.0.1:8765/")
-            mob.wait_for_function("document.getElementById('conn').textContent==='połączono'",
+            mob.wait_for_function("document.getElementById('conn').textContent==='connected'",
                                   timeout=5000)
             mob.wait_for_timeout(400)
             mob.screenshot(path=str(OUT / "web-mobile.png"), full_page=True)
-            print("zapisano", OUT / "web-mobile.png")
+            print("saved", OUT / "web-mobile.png")
 
             browser.close()
     finally:

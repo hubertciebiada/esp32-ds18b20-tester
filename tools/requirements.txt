@@ -1,4 +1,4 @@
-# Zależności do generowania screenshotów web UI (tools/screenshot.py).
+# Dependencies for generating web UI screenshots (tools/screenshot.py).
 #   pip install -r tools/requirements.txt
 #   python -m playwright install chromium
 #   python tools/screenshot.py

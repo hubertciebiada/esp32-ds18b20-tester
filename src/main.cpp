@@ -1,18 +1,19 @@
 /*
- * Tester czujników DS18B20 na ESP32 (standalone, z web UI)
+ * DS18B20 sensor tester for ESP32 (standalone, with web UI)
  * ---------------------------------------------------------
- * Warsztatowy tester kilkudziesięciu czujników DS18B20 na jednej magistrali
- * 1-Wire. Wykrywa wszystkie czujniki, pokazuje ich pełne adresy ROM i
- * temperatury na żywo na lokalnej stronie WWW oraz pomaga zidentyfikować,
- * który ROM odpowiada któremu fizycznemu czujnikowi metodą „ciepłej szklanki”
- * (podświetlenie czujnika z najwyższą temperaturą).
+ * A workbench tester for dozens of DS18B20 sensors on a single 1-Wire bus.
+ * It detects every sensor, shows their full ROM addresses and live
+ * temperatures on a local web page, and helps identify which ROM belongs to
+ * which physical sensor using the "warm glass" method (highlighting the
+ * sensor with the highest temperature).
  *
- * Urządzenie jest w pełni samodzielne – brak integracji z HA / MQTT / ESPHome.
+ * The device is fully standalone - no Home Assistant / MQTT / ESPHome.
  *
- * WAŻNE (niezawodność): magistralę 1-Wire dotykamy WYŁĄCZNIE z pętli loop()
- * (rdzeń aplikacji). Asynchroniczny web server obsługuje zapytania w osobnym
- * tasku i NIGDY nie komunikuje się z magistralą – serwuje tylko stan z pamięci.
- * Dzięki temu krytyczne czasowo operacje 1-Wire nie kolidują z siecią.
+ * IMPORTANT (reliability): the 1-Wire bus is touched ONLY from loop()
+ * (the application core). The asynchronous web server handles requests in a
+ * separate task and NEVER talks to the bus - it only serves state from
+ * memory. This keeps the timing-critical 1-Wire operations from colliding
+ * with networking.
  */
 
 #include <Arduino.h>
@@ -23,40 +24,40 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 
-// ====================== KONFIGURACJA ======================
-// Wszystkie ustawienia w jednym miejscu, na górze pliku.
+// ====================== CONFIGURATION ======================
+// All settings in one place, at the top of the file.
 
-#define ONE_WIRE_BUS        4        // GPIO magistrali 1-Wire (DQ)
-#define SENSOR_RESOLUTION   12       // rozdzielczość czujników: 9..12 bit (domyślnie 12)
-#define MAX_SENSORS         50       // maksymalna liczba czujników na magistrali
-#define READ_INTERVAL_MS    1000UL   // odstęp między cyklami pomiaru
+#define ONE_WIRE_BUS        4        // 1-Wire bus GPIO (DQ)
+#define SENSOR_RESOLUTION   12       // sensor resolution: 9..12 bit (default 12)
+#define MAX_SENSORS         50       // maximum number of sensors on the bus
+#define READ_INTERVAL_MS    1000UL   // interval between measurement cycles
 
-// --- WiFi: tryb Access Point (domyślny) ---
-// UWAGA: zmień hasło przed użyciem w terenie. Hasło AP musi mieć min. 8 znaków.
+// --- WiFi: Access Point mode (default) ---
+// NOTE: change the password before field use. The AP password must be at least 8 characters.
 #define WIFI_AP_SSID        "DS18B20-Tester"
 #define WIFI_AP_PASS        "tester1234"
 
-// --- WiFi: tryb STA (klient istniejącej sieci) ---
-// Aby użyć trybu STA zamiast AP: odkomentuj poniższe stałe ORAZ ustaw
-// USE_WIFI_STA na 1. W trybie STA adres IP odczytasz z monitora szeregowego.
+// --- WiFi: STA mode (client of an existing network) ---
+// To use STA mode instead of AP: uncomment the constants below AND set
+// USE_WIFI_STA to 1. In STA mode read the IP address from the serial monitor.
 #define USE_WIFI_STA        0
-// #define WIFI_STA_SSID    "TwojaSiec"
-// #define WIFI_STA_PASS     "TwojeHaslo"
+// #define WIFI_STA_SSID    "YourNetwork"
+// #define WIFI_STA_PASS     "YourPassword"
 
 // ==========================================================
 
-// Statusy pojedynczego czujnika (diagnostyka błędów odczytu).
+// Status of a single sensor (read error diagnostics).
 enum SensorStatus : uint8_t {
-  ST_OK = 0,            // poprawny odczyt
-  ST_RESET85,           // 85.00 °C – brak udanej konwersji / słabe zasilanie
-  ST_DISCONNECTED,      // -127 °C – odłączony / brak komunikacji
-  ST_NOREAD             // brak odczytu / NaN
+  ST_OK = 0,            // valid reading
+  ST_RESET85,           // 85.00 °C - no successful conversion / weak power
+  ST_DISCONNECTED,      // -127 °C - disconnected / no communication
+  ST_NOREAD             // no reading / NaN
 };
 
-// Pojedynczy czujnik wykryty na magistrali.
+// A single sensor detected on the bus.
 struct Sensor {
-  uint8_t  addr[8];     // 8-bajtowy adres ROM (kolejność odczytu: family..CRC)
-  float    tempC;       // ostatnia temperatura (NAN gdy brak)
+  uint8_t  addr[8];     // 8-byte ROM address (read order: family..CRC)
+  float    tempC;       // last temperature (NAN if none)
   uint8_t  status;      // SensorStatus
 };
 
@@ -66,17 +67,17 @@ AsyncWebServer server(80);
 
 Sensor   sensorList[MAX_SENSORS];
 uint8_t  sensorCount = 0;
-int      maxIndex    = -1;     // indeks najgorętszego sprawnego czujnika (-1 = brak)
+int      maxIndex    = -1;     // index of the hottest healthy sensor (-1 = none)
 
-// Stan nieblokującego cyklu pomiarowego (oparty na millis()).
+// State of the non-blocking measurement cycle (based on millis()).
 bool          conversionPending = false;
 unsigned long conversionStart   = 0;
 unsigned long lastRequest       = 0;
 volatile bool rescanRequested   = false;
 
-// ---------- Pomocnicze: formatowanie ROM ----------
+// ---------- Helpers: ROM formatting ----------
 
-// Pełny ROM w formacie czytelnym: 16 znaków hex, WIELKIE litery (np. 28FF641E0016035C).
+// Full ROM in a human-readable format: 16 hex chars, UPPERCASE (e.g. 28FF641E0016035C).
 void romReadable(const uint8_t *addr, char *out /* >=17 B */) {
   for (uint8_t i = 0; i < 8; i++) {
     sprintf(out + i * 2, "%02X", addr[i]);
@@ -84,25 +85,25 @@ void romReadable(const uint8_t *addr, char *out /* >=17 B */) {
   out[16] = '\0';
 }
 
-// ROM w wariancie do wklejenia do ESPHome (pole `address`).
+// ROM in the variant ready to paste into ESPHome (the `address` field).
 //
-// Weryfikacja kolejności bajtów: ESPHome traktuje adres jako 64-bitową liczbę,
-// w której KOD RODZINY (0x28 dla DS18B20) jest najmłodszym bajtem. Przy zapisie
-// szesnastkowym (0x...) bajty pojawiają się więc w kolejności ODWROTNEJ niż
-// odczyt z magistrali – kod rodziny ląduje na końcu, CRC na początku.
-// Przykład: ROM 28 FF 64 1E 00 16 03 5C  ->  ESPHome 0x5c0316001e64ff28
+// Byte-order check: ESPHome treats the address as a 64-bit number in which the
+// FAMILY CODE (0x28 for DS18B20) is the least significant byte. When written in
+// hex (0x...), the bytes therefore appear in the REVERSE order compared to the
+// bus read order - the family code lands at the end, the CRC at the start.
+// Example: ROM 28 FF 64 1E 00 16 03 5C  ->  ESPHome 0x5c0316001e64ff28
 void romEsphome(const uint8_t *addr, char *out /* >=19 B */) {
   out[0] = '0';
   out[1] = 'x';
   for (uint8_t i = 0; i < 8; i++) {
-    sprintf(out + 2 + i * 2, "%02x", addr[7 - i]);  // bajty od najmłodszego
+    sprintf(out + 2 + i * 2, "%02x", addr[7 - i]);  // bytes from least significant
   }
   out[18] = '\0';
 }
 
-// Flaga prawdopodobnego klona: oryginalny DS18B20 ma wzorzec ROM
-// 28-xx-xx-xx-xx-00-00-xx (kod rodziny 0x28, bajty 5 i 6 równe 0x00).
-// Czujnika NIE odrzucamy – tylko zaznaczamy wizualnie.
+// Likely-clone flag: a genuine DS18B20 has the ROM pattern
+// 28-xx-xx-xx-xx-00-00-xx (family code 0x28, bytes 5 and 6 equal to 0x00).
+// We do NOT reject the sensor - we only flag it visually.
 bool isLikelyClone(const uint8_t *addr) {
   return !(addr[0] == 0x28 && addr[5] == 0x00 && addr[6] == 0x00);
 }
@@ -116,7 +117,7 @@ const char *statusToString(uint8_t st) {
   }
 }
 
-// Czas konwersji zależny od rozdzielczości (datasheet DS18B20).
+// Conversion time depends on resolution (DS18B20 datasheet).
 unsigned long conversionDelayMs() {
   switch (SENSOR_RESOLUTION) {
     case 9:  return 94;
@@ -126,10 +127,10 @@ unsigned long conversionDelayMs() {
   }
 }
 
-// ---------- Skan magistrali ----------
+// ---------- Bus scan ----------
 
-// Wykrywa wszystkie czujniki na magistrali i zapamiętuje ich adresy ROM.
-// Wywoływane przy starcie oraz na żądanie /rescan (zawsze z loop()).
+// Detects all sensors on the bus and stores their ROM addresses.
+// Called at startup and on demand via /rescan (always from loop()).
 void scanBus() {
   dallas.begin();
 
@@ -147,21 +148,21 @@ void scanBus() {
     }
   }
 
-  // Ustaw rozdzielczość globalnie i włącz tryb nieblokujący.
+  // Set the resolution globally and enable non-blocking mode.
   dallas.setResolution(SENSOR_RESOLUTION);
   dallas.setWaitForConversion(false);
 
-  // Wymuś natychmiastowy pierwszy pomiar po skanie.
+  // Force an immediate first measurement after the scan.
   conversionPending = false;
   lastRequest = millis() - READ_INTERVAL_MS;
   maxIndex = -1;
 
-  Serial.printf("[scan] wykryto czujnikow: %u (limit %u)\n", sensorCount, (unsigned)MAX_SENSORS);
+  Serial.printf("[scan] sensors detected: %u (limit %u)\n", sensorCount, (unsigned)MAX_SENSORS);
 }
 
-// ---------- Cykl pomiarowy (nieblokujący) ----------
+// ---------- Measurement cycle (non-blocking) ----------
 
-// Odczyt scratchpadów po zakończonej konwersji + klasyfikacja statusów.
+// Reads the scratchpads after the conversion finishes + classifies statuses.
 void readAllTemperatures() {
   int    bestIdx  = -1;
   float  bestTemp = -1000.0f;
@@ -181,16 +182,16 @@ void readAllTemperatures() {
     } else {
       sensorList[i].tempC  = t;
       sensorList[i].status = ST_OK;
-      if (t > bestTemp) { bestTemp = t; bestIdx = i; }  // do maksimum tylko ST_OK
+      if (t > bestTemp) { bestTemp = t; bestIdx = i; }  // only ST_OK counts toward the maximum
     }
   }
 
-  maxIndex = bestIdx;  // najgorętszy SPRAWNY czujnik (błędne wykluczone)
+  maxIndex = bestIdx;  // hottest HEALTHY sensor (faulty ones excluded)
 }
 
 // ---------- JSON / CSV ----------
 
-// Buduje JSON ze stanem wszystkich czujników (dla endpointu /data).
+// Builds JSON with the state of all sensors (for the /data endpoint).
 String buildJson() {
   JsonDocument doc;
   doc["count"]      = sensorCount;
@@ -229,7 +230,7 @@ String buildJson() {
   return out;
 }
 
-// Buduje plik CSV ze stanem czujników (dla endpointu /export.csv).
+// Builds a CSV file with the sensor state (for the /export.csv endpoint).
 String buildCsv() {
   String csv = F("index;rom;esphome;tempC;status;clone\n");
   char rom[17];
@@ -250,14 +251,14 @@ String buildCsv() {
   return csv;
 }
 
-// ---------- Strona WWW (w PROGMEM) ----------
+// ---------- Web page (in PROGMEM) ----------
 
 const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
-<html lang="pl">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tester DS18B20</title>
+<title>DS18B20 Tester</title>
 <style>
   :root{--bg:#0f172a;--card:#1e293b;--mut:#94a3b8;--ok:#22c55e;--warn:#f59e0b;
         --err:#ef4444;--hot:#f97316;--line:#334155;--fg:#e2e8f0;}
@@ -309,31 +310,31 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>🌡️ Tester czujników DS18B20</h1>
-  <span class="pill">Czujniki: <b id="count">–</b></span>
-  <span class="pill">Rozdzielczość: <b id="res">–</b> bit</span>
-  <span class="pill">Status: <b id="conn">łączenie…</b></span>
+  <h1>🌡️ DS18B20 Sensor Tester</h1>
+  <span class="pill">Sensors: <b id="count">–</b></span>
+  <span class="pill">Resolution: <b id="res">–</b> bit</span>
+  <span class="pill">Status: <b id="conn">connecting…</b></span>
 </header>
 
 <div class="wrap">
   <div id="hotbox" class="hot empty">
-    <div class="lbl">Najgorętszy czujnik (metoda ciepłej szklanki)</div>
-    <div class="rom" id="hotrom">– brak danych –</div>
+    <div class="lbl">Hottest sensor (warm glass method)</div>
+    <div class="rom" id="hotrom">– no data –</div>
     <div class="t" id="hottemp"></div>
   </div>
 
   <div class="bar">
-    <button class="primary" onclick="rescan()">🔄 Skanuj ponownie</button>
-    <button onclick="exportCsv()">⬇️ Eksport CSV</button>
-    <button onclick="copyRoms()">📋 Kopiuj listę ROM</button>
+    <button class="primary" onclick="rescan()">🔄 Rescan</button>
+    <button onclick="exportCsv()">⬇️ Export CSV</button>
+    <button onclick="copyRoms()">📋 Copy ROM list</button>
   </div>
 
   <table>
     <thead>
-      <tr><th>#</th><th>ROM</th><th>ESPHome</th><th>Temperatura</th><th>Status</th></tr>
+      <tr><th>#</th><th>ROM</th><th>ESPHome</th><th>Temperature</th><th>Status</th></tr>
     </thead>
     <tbody id="tbody">
-      <tr><td colspan="5" class="empty-tbl">Ładowanie…</td></tr>
+      <tr><td colspan="5" class="empty-tbl">Loading…</td></tr>
     </tbody>
   </table>
 </div>
@@ -341,10 +342,10 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 <div id="toast" class="toast"></div>
 
 <script>
-// Stan trzymany wyłącznie w pamięci JS (bez localStorage/sessionStorage).
+// State kept only in JS memory (no localStorage/sessionStorage).
 let latest = {sensors: []};
 
-const STLABEL = {ok:'OK', reset85:'Reset 85°C', disconnected:'Odłączony', noread:'Brak odczytu'};
+const STLABEL = {ok:'OK', reset85:'Reset 85°C', disconnected:'Disconnected', noread:'No reading'};
 
 function fmtTemp(s){
   if(s.tempC === null || s.status === 'disconnected' || s.status === 'noread') return '—';
@@ -362,19 +363,19 @@ function render(d){
     document.getElementById('hottemp').textContent = d.maxTemp.toFixed(2) + ' °C';
   } else {
     hb.classList.add('empty');
-    document.getElementById('hotrom').textContent  = '– brak sprawnych czujników –';
+    document.getElementById('hotrom').textContent  = '– no healthy sensors –';
     document.getElementById('hottemp').textContent = '';
   }
 
   const tb = document.getElementById('tbody');
   if(!d.sensors.length){
-    tb.innerHTML = '<tr><td colspan="5" class="empty-tbl">Brak wykrytych czujników. Sprawdź okablowanie i pull-up.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="5" class="empty-tbl">No sensors detected. Check the wiring and pull-up.</td></tr>';
     return;
   }
   let html = '';
   d.sensors.forEach((s,i)=>{
     const hot   = (i === d.maxIndex) ? ' class="hotrow"' : '';
-    const clone = s.clone ? '<span class="clone" title="ROM niezgodny ze wzorcem 28-xx-xx-xx-xx-00-00-xx">klon?</span>' : '';
+    const clone = s.clone ? '<span class="clone" title="ROM does not match the 28-xx-xx-xx-xx-00-00-xx pattern">clone?</span>' : '';
     html += `<tr${hot}>
       <td>${i}</td>
       <td class="rom">${s.rom}${clone}</td>
@@ -392,23 +393,23 @@ async function refresh(){
     const d = await r.json();
     latest = d;
     render(d);
-    document.getElementById('conn').textContent = 'połączono';
+    document.getElementById('conn').textContent = 'connected';
   }catch(e){
-    document.getElementById('conn').textContent = 'brak połączenia';
+    document.getElementById('conn').textContent = 'no connection';
   }
 }
 
 function rescan(){
-  fetch('/rescan', {method:'POST'}).then(()=>toast('Ponowny skan zlecony')).catch(()=>{});
+  fetch('/rescan', {method:'POST'}).then(()=>toast('Rescan scheduled')).catch(()=>{});
 }
 function exportCsv(){ window.location = '/export.csv'; }
 
 function copyRoms(){
   const txt = latest.sensors.map(s=>s.rom).join('\n');
-  if(!txt){ toast('Brak czujników do skopiowania'); return; }
-  // navigator.clipboard wymaga bezpiecznego kontekstu – fallback dla zwykłego HTTP.
+  if(!txt){ toast('No sensors to copy'); return; }
+  // navigator.clipboard requires a secure context - fallback for plain HTTP.
   if(navigator.clipboard && window.isSecureContext){
-    navigator.clipboard.writeText(txt).then(()=>toast('Skopiowano listę ROM')).catch(()=>fallbackCopy(txt));
+    navigator.clipboard.writeText(txt).then(()=>toast('ROM list copied')).catch(()=>fallbackCopy(txt));
   } else {
     fallbackCopy(txt);
   }
@@ -417,8 +418,8 @@ function fallbackCopy(txt){
   const ta = document.createElement('textarea');
   ta.value = txt; ta.style.position='fixed'; ta.style.opacity='0';
   document.body.appendChild(ta); ta.focus(); ta.select();
-  try{ document.execCommand('copy'); toast('Skopiowano listę ROM'); }
-  catch(e){ toast('Nie udało się skopiować'); }
+  try{ document.execCommand('copy'); toast('ROM list copied'); }
+  catch(e){ toast('Copy failed'); }
   document.body.removeChild(ta);
 }
 
@@ -431,7 +432,7 @@ function toast(msg){
 }
 
 refresh();
-setInterval(refresh, 1000);  // auto-odświeżanie co 1 s
+setInterval(refresh, 1000);  // auto-refresh every 1 s
 </script>
 </body>
 </html>
@@ -443,10 +444,10 @@ void setupWiFi() {
 #if USE_WIFI_STA
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASS);
-  Serial.print("[wifi] STA, laczenie");
+  Serial.print("[wifi] STA, connecting");
   unsigned long t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
-    delay(250);            // tylko w setup() – w loop() nie ma delay()
+    delay(250);            // only in setup() - no delay() in loop()
     Serial.print('.');
   }
   Serial.println();
@@ -454,7 +455,7 @@ void setupWiFi() {
     Serial.print("[wifi] IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("[wifi] STA nieudane – sprawdz dane sieci");
+    Serial.println("[wifi] STA failed - check the network credentials");
   }
 #else
   WiFi.mode(WIFI_AP);
@@ -480,8 +481,8 @@ void setupServer() {
     req->send(res);
   });
 
-  // Skan ustawiamy tylko flagą – właściwy skan wykona loop() (dotyk magistrali
-  // wyłącznie z rdzenia aplikacji, nie z tasku web servera).
+  // We only set a flag for the scan - the actual scan runs in loop() (the bus
+  // is touched only from the application core, never from the web server task).
   server.on("/rescan", HTTP_ANY, [](AsyncWebServerRequest *req) {
     rescanRequested = true;
     req->send(200, "application/json", "{\"ok\":true,\"scheduled\":true}");
@@ -492,7 +493,7 @@ void setupServer() {
   });
 
   server.begin();
-  Serial.println("[http] serwer wystartowal na porcie 80");
+  Serial.println("[http] server started on port 80");
 }
 
 // ---------- setup / loop ----------
@@ -500,7 +501,7 @@ void setupServer() {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("\n=== Tester DS18B20 (ESP32) ===");
+  Serial.println("\n=== DS18B20 Tester (ESP32) ===");
 
   setupWiFi();
   scanBus();
@@ -508,7 +509,7 @@ void setup() {
 }
 
 void loop() {
-  // Obsługa zleconego skanu (z endpointu /rescan).
+  // Handle a scan scheduled via the /rescan endpoint.
   if (rescanRequested) {
     rescanRequested = false;
     scanBus();
@@ -517,16 +518,16 @@ void loop() {
   unsigned long now = millis();
 
   if (conversionPending) {
-    // Czekamy nieblokująco na zakończenie konwersji, potem czytamy scratchpady.
+    // Wait non-blockingly for the conversion to finish, then read the scratchpads.
     if (now - conversionStart >= conversionDelayMs()) {
       readAllTemperatures();
       conversionPending = false;
       lastRequest = now;
     }
   } else {
-    // Co READ_INTERVAL_MS wyzwalamy jedną wspólną konwersję (Skip ROM + Convert T).
+    // Every READ_INTERVAL_MS trigger one shared conversion (Skip ROM + Convert T).
     if (now - lastRequest >= READ_INTERVAL_MS) {
-      dallas.requestTemperatures();   // nieblokujące (setWaitForConversion(false))
+      dallas.requestTemperatures();   // non-blocking (setWaitForConversion(false))
       conversionStart = now;
       conversionPending = true;
     }
